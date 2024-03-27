@@ -46,11 +46,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
 /**
- * This interface is just a shorthand for {@link Resolver} with {@link StreamInfo} as source and
- * {@link MediaSource} as product. It contains many static methods that can be used by classes
+ * This interface contains many static methods that can be used by classes
  * implementing this interface, and nothing else.
  */
-public interface PlaybackResolver extends Resolver<StreamInfo, MediaSource> {
+public interface PlaybackResolver {
     String TAG = PlaybackResolver.class.getSimpleName();
 
 
@@ -200,7 +199,7 @@ public interface PlaybackResolver extends Resolver<StreamInfo, MediaSource> {
         }
 
         try {
-            final StreamInfoTag tag = StreamInfoTag.of(info);
+            final StreamInfoTag tag = new StreamInfoTag(info, null, null, null);
             if (!info.getHlsUrl().isEmpty()) {
                 return buildLiveMediaSource(dataSource, info.getHlsUrl(), C.CONTENT_TYPE_HLS, tag);
             } else if (!info.getDashMpdUrl().isEmpty()) {
@@ -416,6 +415,7 @@ public interface PlaybackResolver extends Resolver<StreamInfo, MediaSource> {
             // (which is the last segment of the stream)
 
             try {
+                // We know that itagItem has to be set, because it’s youtube-specific
                 final ItagItem itagItem = Objects.requireNonNull(stream.getItagItem());
                 final String manifestString = YoutubePostLiveStreamDvrDashManifestCreator
                         .fromPostLiveStreamDvrStreamingUrl(stream.getContent(),
@@ -449,6 +449,7 @@ public interface PlaybackResolver extends Resolver<StreamInfo, MediaSource> {
                     try {
                         final String manifestString = YoutubeProgressiveDashManifestCreator
                                 .fromProgressiveStreamingUrl(stream.getContent(),
+                            // We know that itagItem has to be set, because it’s youtube-specific
                                         Objects.requireNonNull(stream.getItagItem()),
                                         streamInfo.getDuration());
                         return buildYoutubeManualDashMediaSource(dataSource,
@@ -476,6 +477,7 @@ public interface PlaybackResolver extends Resolver<StreamInfo, MediaSource> {
                 try {
                     final String manifestString = YoutubeOtfDashManifestCreator
                             .fromOtfStreamingUrl(stream.getContent(),
+                            // We know that itagItem has to be set, because it’s youtube-specific
                                     Objects.requireNonNull(stream.getItagItem()),
                                     streamInfo.getDuration());
                     return buildYoutubeManualDashMediaSource(dataSource,

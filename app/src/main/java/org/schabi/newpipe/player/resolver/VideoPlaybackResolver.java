@@ -24,7 +24,9 @@ import org.schabi.newpipe.player.mediaitem.StreamInfoTag;
 import org.schabi.newpipe.util.ListHelper;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 import static com.google.android.exoplayer2.C.TIME_UNSET;
@@ -39,8 +41,6 @@ public class VideoPlaybackResolver implements PlaybackResolver {
     private final Context context;
     @NonNull
     private final PlayerDataSource dataSource;
-    @NonNull
-    private final QualityResolver qualityResolver;
     private SourceType streamSourceType;
 
     @Nullable
@@ -54,57 +54,84 @@ public class VideoPlaybackResolver implements PlaybackResolver {
         VIDEO_WITH_AUDIO_OR_AUDIO_ONLY
     }
 
-    public VideoPlaybackResolver(@NonNull final Context context,
-                                 @NonNull final PlayerDataSource dataSource,
-                                 @NonNull final QualityResolver qualityResolver) {
-        this.context = context;
-        this.dataSource = dataSource;
-        this.qualityResolver = qualityResolver;
+    /**
+     * Depending on the player we select different video streams.
+     */
+    public enum SelectedPlayer {
+        MAIN,
+        POPUP
     }
 
-    @Override
+    public VideoPlaybackResolver(@NonNull final Context context,
+                                 @NonNull final PlayerDataSource dataSource) {
+        this.context = context;
+        this.dataSource = dataSource;
+    }
+
     @Nullable
-    public MediaSource resolve(@NonNull final StreamInfo info) {
+    public MediaSource resolve(@NonNull final StreamInfo info,
+                               @NonNull final SelectedPlayer selectedPlayer) {
         final MediaSource liveSource = PlaybackResolver.maybeBuildLiveMediaSource(dataSource, info);
         if (liveSource != null) {
             streamSourceType = SourceType.LIVE_STREAM;
             return liveSource;
         }
 
-        final List<MediaSource> mediaSources = new ArrayList<>();
-
         // Create video stream source
         final List<VideoStream> videoStreamsList = ListHelper.getSortedStreamVideosList(context,
                 getPlayableStreams(info.getVideoStreams(), info.getServiceId()),
                 getPlayableStreams(info.getVideoOnlyStreams(), info.getServiceId()), false, true);
         final List<AudioStream> audioStreamsList =
-                getFilteredAudioStreams(context, info.getAudioStreams());
+                getFilteredAudioStreams(
+                        context,
+                        // TODO: getAudioStreams should be @NonNull
+                        Objects.requireNonNullElse(info.getAudioStreams(), Collections.emptyList())
+                );
 
-        final int videoIndex;
-        if (videoStreamsList.isEmpty()) {
-            videoIndex = -1;
-        } else if (playbackQuality == null) {
-            videoIndex = qualityResolver.getDefaultResolutionIndex(videoStreamsList);
+        int videoIndex = -999;
+        if (playbackQuality == null) {
+            switch (selectedPlayer) {
+                case MAIN -> {
+                    videoIndex = ListHelper.getDefaultResolutionIndex(
+                            context,
+                            videoStreamsList
+                    );
+                }
+                case POPUP -> {
+                    videoIndex = ListHelper.getPopupDefaultResolutionIndex(
+                            context,
+                            videoStreamsList
+                    );
+                }
+            }
         } else {
-            videoIndex = qualityResolver.getOverrideResolutionIndex(videoStreamsList,
-                    getPlaybackQuality());
+            videoIndex = ListHelper.getDefaultResolutionWithDefaultFormat(
+                    context,
+                    getPlaybackQuality(),
+                    videoStreamsList
+            );
         }
 
         final int audioIndex =
                 ListHelper.getAudioFormatIndex(context, audioStreamsList, audioTrack);
-        final MediaItemTag tag =
-                StreamInfoTag.of(info, videoStreamsList, videoIndex, audioStreamsList, audioIndex);
-        @Nullable final VideoStream video = tag.getMaybeQuality()
-                .map(MediaItemTag.Quality::getSelectedVideoStream)
-                .orElse(null);
-        @Nullable final AudioStream audio = tag.getMaybeAudioTrack()
-                .map(MediaItemTag.AudioTrack::getSelectedAudioStream)
-                .orElse(null);
 
+        @Nullable MediaItemTag.Quality video = null;
+        @Nullable MediaItemTag.AudioTrack audio = null;
+
+        if (videoIndex != -1) {
+            video = new MediaItemTag.Quality(videoStreamsList, videoIndex);
+        }
+        if (audioIndex != -1) {
+            audio = new MediaItemTag.AudioTrack(audioStreamsList, audioIndex);
+        }
+        final MediaItemTag tag = new StreamInfoTag(info, video, audio, null);
+
+        final List<MediaSource> mediaSources = new ArrayList<>();
         if (video != null) {
             try {
+                final VideoStream stream = video.getSelectedVideoStream();
                 final MediaSource streamSource = PlaybackResolver.buildMediaSource(
-                        dataSource, video, info, PlaybackResolver.cacheKeyOf(info, video), tag);
+                        dataSource, stream, info, PlaybackResolver.cacheKeyOf(info, stream), tag);
                 mediaSources.add(streamSource);
             } catch (final ResolverException e) {
                 Log.e(TAG, "Unable to create video source", e);
@@ -114,10 +141,14 @@ public class VideoPlaybackResolver implements PlaybackResolver {
 
         // Use the audio stream if there is no video stream, or
         // merge with audio stream in case if video does not contain audio
-        if (audio != null && (video == null || video.isVideoOnly() || audioTrack != null)) {
+        if (audio != null
+                && (video == null
+                    || video.getSelectedVideoStream().isVideoOnly()
+                    || audioTrack != null)) {
             try {
+                final AudioStream stream = audio.getSelectedAudioStream();
                 final MediaSource audioSource = PlaybackResolver.buildMediaSource(
-                        dataSource, audio, info, PlaybackResolver.cacheKeyOf(info, audio), tag);
+                        dataSource, stream, info, PlaybackResolver.cacheKeyOf(info, stream), tag);
                 mediaSources.add(audioSource);
                 streamSourceType = SourceType.VIDEO_WITH_SEPARATED_AUDIO;
             } catch (final ResolverException e) {
@@ -187,18 +218,12 @@ public class VideoPlaybackResolver implements PlaybackResolver {
         this.playbackQuality = playbackQuality;
     }
 
-    @Nullable
-    public String getAudioTrack() {
-        return audioTrack;
-    }
-
-    public void setAudioTrack(@Nullable final String audioLanguage) {
-        this.audioTrack = audioLanguage;
-    }
-
-    public interface QualityResolver {
-        int getDefaultResolutionIndex(List<VideoStream> sortedVideos);
-
-        int getOverrideResolutionIndex(List<VideoStream> sortedVideos, String playbackQuality);
+    /** Set audio track to be used the next time {@link #resolve(StreamInfo, SelectedPlayer)}
+     * is called.
+     *
+     * @param audioTrack the {@link AudioStream} audioTrackId that should be selected on resolve
+     */
+    public void setAudioTrack(@Nullable final String audioTrack) {
+        this.audioTrack = audioTrack;
     }
 }

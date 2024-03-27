@@ -6,6 +6,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.res.Resources;
 import android.net.ConnectivityManager;
+import android.util.Pair;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -73,57 +74,32 @@ public final class ListHelper {
     /**
      * @param context      Android app context
      * @param videoStreams list of the video streams to check
-     * @return index of the video stream with the default index
+     * @return index of the video stream with the default index, -1 if `videoStreams` is empty
      * @see #getDefaultResolutionIndex(String, String, MediaFormat, List)
      */
     public static int getDefaultResolutionIndex(final Context context,
                                                 final List<VideoStream> videoStreams) {
-        final String defaultResolution = computeDefaultResolution(context,
+        final String defaultResolution = getPreferredResolutionOrCurrentLimit(context,
                 R.string.default_resolution_key, R.string.default_resolution_value);
         return getDefaultResolutionWithDefaultFormat(context, defaultResolution, videoStreams);
     }
 
-    /**
-     * @param context           Android app context
-     * @param videoStreams      list of the video streams to check
-     * @param defaultResolution the default resolution to look for
-     * @return index of the video stream with the default index
-     * @see #getDefaultResolutionIndex(String, String, MediaFormat, List)
-     */
-    public static int getResolutionIndex(final Context context,
-                                         final List<VideoStream> videoStreams,
-                                         final String defaultResolution) {
-        return getDefaultResolutionWithDefaultFormat(context, defaultResolution, videoStreams);
-    }
 
     /**
      * @param context      Android app context
      * @param videoStreams list of the video streams to check
-     * @return index of the video stream with the default index
+     * @return index of the video stream with the default index, -1 if `videoStreams` is empty
      * @see #getDefaultResolutionIndex(String, String, MediaFormat, List)
      */
     public static int getPopupDefaultResolutionIndex(final Context context,
                                                      final List<VideoStream> videoStreams) {
-        final String defaultResolution = computeDefaultResolution(context,
+        final String defaultResolution = getPreferredResolutionOrCurrentLimit(context,
                 R.string.default_popup_resolution_key, R.string.default_popup_resolution_value);
         return getDefaultResolutionWithDefaultFormat(context, defaultResolution, videoStreams);
     }
 
-    /**
-     * @param context           Android app context
-     * @param videoStreams      list of the video streams to check
-     * @param defaultResolution the default resolution to look for
-     * @return index of the video stream with the default index
-     * @see #getDefaultResolutionIndex(String, String, MediaFormat, List)
-     */
-    public static int getPopupResolutionIndex(final Context context,
-                                              final List<VideoStream> videoStreams,
-                                              final String defaultResolution) {
-        return getDefaultResolutionWithDefaultFormat(context, defaultResolution, videoStreams);
-    }
-
     public static int getDefaultAudioFormat(final Context context,
-                                            final List<AudioStream> audioStreams) {
+                                            @NonNull final List<AudioStream> audioStreams) {
         return getAudioIndexByHighestRank(audioStreams,
                 getAudioTrackComparator(context).thenComparing(getAudioFormatComparator(context)));
     }
@@ -141,9 +117,17 @@ public final class ListHelper {
         return groupedAudioStreams.indexOf(highestRanked);
     }
 
+    /** Get the index of the audio format to play in audioStreams.
+     * .
+     * @param context
+     * @param audioStreams
+     * @param trackId Try to find this #AudioStream.getAudioTrackId in the audioStreams & select it
+     * @return index to play, or -1 if audioStreams is empty.
+     */
     public static int getAudioFormatIndex(final Context context,
-                                          final List<AudioStream> audioStreams,
+                                          @NonNull final List<AudioStream> audioStreams,
                                           @Nullable final String trackId) {
+        // if we were given a trackId, try to select that before going to the defaults.
         if (trackId != null) {
             for (int i = 0; i < audioStreams.size(); i++) {
                 final AudioStream s = audioStreams.get(i);
@@ -284,44 +268,56 @@ public final class ListHelper {
      * Filter the list of audio streams and return a list with the preferred stream for
      * each audio track. Streams are sorted with the preferred language in the first position.
      *
+     * The following formats cannot be played and are thus skipped:
+     *
+     * <ul>
+     *  <li>{@literal DeliveryMethod.TORRENT}
+     *  <li>both {@literal DeliveryMethod.HLS} AND {@literal MediaFormat.OPUS}</li>
+     * </ul>
+     *
      * @param context      the context to search for the track to give preference
      * @param audioStreams the list of audio streams
      * @return the sorted, filtered list
      */
+    @NonNull
     public static List<AudioStream> getFilteredAudioStreams(
             @NonNull final Context context,
-            @Nullable final List<AudioStream> audioStreams) {
-        if (audioStreams == null) {
-            return Collections.emptyList();
-        }
+            @NonNull final List<AudioStream> audioStreams) {
 
-        final HashMap<String, AudioStream> collectedStreams = new HashMap<>();
-
-        final Comparator<AudioStream> cmp = getAudioFormatComparator(context);
-
-        for (final AudioStream stream : audioStreams) {
-            if (stream.getDeliveryMethod() == DeliveryMethod.TORRENT
+        final List<AudioStream> result = audioStreams
+                .stream()
+                // remove torrents we can’t play
+                .filter(stream ->
+                    !(
+                    // we can’t play torrents
+                    stream.getDeliveryMethod() == DeliveryMethod.TORRENT
+                    // This format is not supported by ExoPlayer when returned as HLS streams,
+                    // so we can't play streams using this format and this delivery method.
                     || (stream.getDeliveryMethod() == DeliveryMethod.HLS
-                    && stream.getFormat() == MediaFormat.OPUS)) {
-                continue;
-            }
-
-            final String trackId = Objects.toString(stream.getAudioTrackId(), "");
-
-            final AudioStream presentStream = collectedStreams.get(trackId);
-            if (presentStream == null || cmp.compare(stream, presentStream) > 0) {
-                collectedStreams.put(trackId, stream);
-            }
-        }
-
-        // Filter unknown audio tracks if there are multiple tracks
-        if (collectedStreams.size() > 1) {
-            collectedStreams.remove("");
-        }
-
-        // Sort collected streams by name
-        return collectedStreams.values().stream().sorted(getAudioTrackNameComparator(context))
+                    && stream.getFormat() == MediaFormat.OPUS))
+                )
+                .collect(Collectors.groupingBy(
+                        stream ->
+                                // Streams grouped by their locale+audiotype
+                                // (e.g. en+original, fr+dubbed)
+                                new Pair<Locale, AudioTrackType>(
+                                        stream.getAudioLocale(),
+                                        stream.getAudioTrackType()
+                                ),
+                        // from each list of grouped streams,
+                        // we select the one that has the most fitting audio type & quality
+                         Collectors.maxBy(getAudioFormatComparator(context))
+                ))
+                .entrySet()
+                .stream()
+                // get streams and remove bins that don’t contain streams
+                .flatMap(e -> e.getValue().stream())
+                // sort the preferred audio stream last
+                .sorted(getAudioTrackComparator(context))
                 .collect(Collectors.toList());
+
+        return result;
+
     }
 
     /**
@@ -390,23 +386,42 @@ public final class ListHelper {
                 .collect(Collectors.toList());
     }
 
-    private static String computeDefaultResolution(@NonNull final Context context, final int key,
-                                                   final int value) {
+    /** Lookup the preferred resolution and the current resolution limit.
+     *
+     * @param context App context
+     * @param defaultResolutionKey The defaultResolution preference key
+     * @param defaultResolutionDefaultValue Default resolution if key does not exist
+     * @return The smaller resolution of either the preference or the current limit.
+     */
+    private static String getPreferredResolutionOrCurrentLimit(
+            @NonNull final Context context,
+            final int defaultResolutionKey,
+            final int defaultResolutionDefaultValue
+    ) {
         final SharedPreferences preferences =
                 PreferenceManager.getDefaultSharedPreferences(context);
 
         // Load the preferred resolution otherwise the best available
-        String resolution = preferences != null
-                ? preferences.getString(context.getString(key), context.getString(value))
-                : context.getString(R.string.best_resolution_key);
+        final String preferredResolution = preferences.getString(
+                context.getString(defaultResolutionKey),
+                context.getString(defaultResolutionDefaultValue)
+        );
 
-        final String maxResolution = getResolutionLimit(context);
-        if (maxResolution != null
-                && (resolution.equals(context.getString(R.string.best_resolution_key))
-                || compareVideoStreamResolution(maxResolution, resolution) < 1)) {
-            resolution = maxResolution;
+        // clamp to the currently maximum allowed resolution
+        final String result;
+        final String resolutionLimit = getCurrentResolutionLimit(context);
+        if (resolutionLimit != null
+                && (
+                    // if the preference is best_resolution
+                    preferredResolution.equals(context.getString(R.string.best_resolution_key))
+                    // or the preference is higher than the current max allowed resolution
+                    || compareVideoStreamResolution(resolutionLimit, preferredResolution) < 1
+                )) {
+            result = resolutionLimit;
+        } else {
+            result = preferredResolution;
         }
-        return resolution;
+        return result;
     }
 
     /**
@@ -414,17 +429,19 @@ public final class ListHelper {
      * on the parameters defaultResolution and defaultFormat.
      *
      * @param defaultResolution the default resolution to look for
+     *                          (a resolution string or `bestResolutionKey`).
      * @param bestResolutionKey key of the best resolution
      * @param defaultFormat     the default format to look for
      * @param videoStreams      a mutable list of the video streams to check (it will be sorted in
      *                          place)
-     * @return index of the default resolution&format in the sorted videoStreams
+     * @return index of the default resolution&format in the sorted videoStreams,
+     *         -1 if `videoStreams` is empty
      */
     static int getDefaultResolutionIndex(final String defaultResolution,
                                          final String bestResolutionKey,
                                          final MediaFormat defaultFormat,
-                                         @Nullable final List<VideoStream> videoStreams) {
-        if (videoStreams == null || videoStreams.isEmpty()) {
+                                         @NonNull final List<VideoStream> videoStreams) {
+        if (videoStreams.isEmpty()) {
             return -1;
         }
 
@@ -539,16 +556,12 @@ public final class ListHelper {
      * @param comparator   The comparator used for determining the max/best/highest ranked value
      * @return Index of audio stream that produces the highest ranked result or -1 if not found
      */
-    static int getAudioIndexByHighestRank(@Nullable final List<AudioStream> audioStreams,
+    static int getAudioIndexByHighestRank(@NonNull final List<AudioStream> audioStreams,
                                           final Comparator<AudioStream> comparator) {
-        if (audioStreams == null || audioStreams.isEmpty()) {
-            return -1;
-        }
-
-        final AudioStream highestRankedAudioStream = audioStreams.stream()
-                .max(comparator).orElse(null);
-
-        return audioStreams.indexOf(highestRankedAudioStream);
+        return audioStreams.stream()
+                .max(comparator)
+                .map(audioStreams::indexOf)
+                .orElse(-1);
     }
 
     /**
@@ -627,16 +640,18 @@ public final class ListHelper {
 
     /**
      * Fetches the desired resolution or returns the default if it is not found.
-     * The resolution will be reduced if video chocking is active.
+     * The resolution will be reduced if video choking is active.
      *
      * @param context           Android app context
      * @param defaultResolution the default resolution
      * @param videoStreams      the list of video streams to check
-     * @return the index of the preferred video stream
+     * @return the index of the preferred video stream, -1 if `videoStreams` is empty
      */
-    private static int getDefaultResolutionWithDefaultFormat(@NonNull final Context context,
-                                                             final String defaultResolution,
-                                                             final List<VideoStream> videoStreams) {
+    public static int getDefaultResolutionWithDefaultFormat(
+            @NonNull final Context context,
+            final String defaultResolution,
+            @NonNull final List<VideoStream> videoStreams
+    ) {
         final MediaFormat defaultFormat = getDefaultFormat(context,
                 R.string.default_video_format_key, R.string.default_video_format_value);
         return getDefaultResolutionIndex(defaultResolution,
@@ -677,6 +692,14 @@ public final class ListHelper {
         return format;
     }
 
+    /** #Comparator for two resolution strings.
+     *
+     * See {@link #sortStreamList} for ordering.
+     *
+     * @param r1 first
+     * @param r2 second
+     * @return comparison int
+     */
     private static int compareVideoStreamResolution(@NonNull final String r1,
                                                     @NonNull final String r2) {
         try {
@@ -693,31 +716,37 @@ public final class ListHelper {
         }
     }
 
-    static boolean isLimitingDataUsage(@NonNull final Context context) {
-        return getResolutionLimit(context) != null;
+    /** Does the application have a maximum resolution set?
+     *
+     * @param context App context
+     * @return whether a max resolution is set
+     */
+    static boolean isCurrentlyLimitingDataUsage(@NonNull final Context context) {
+        return getCurrentResolutionLimit(context) != null;
     }
 
     /**
-     * The maximum resolution allowed.
+     * The maximum current resolution allowed by application settings.
+     * Takes into account whether we are on a metered network.
      *
      * @param context App context
-     * @return maximum resolution allowed or null if there is no maximum
+     * @return current maximum resolution allowed or null if there is no maximum
      */
-    private static String getResolutionLimit(@NonNull final Context context) {
-        String resolutionLimit = null;
+    private static String getCurrentResolutionLimit(@NonNull final Context context) {
+        String currentResolutionLimit = null;
         if (isMeteredNetwork(context)) {
             final SharedPreferences preferences =
                     PreferenceManager.getDefaultSharedPreferences(context);
             final String defValue = context.getString(R.string.limit_data_usage_none_key);
             final String value = preferences.getString(
                     context.getString(R.string.limit_mobile_data_usage_key), defValue);
-            resolutionLimit = defValue.equals(value) ? null : value;
+            currentResolutionLimit = defValue.equals(value) ? null : value;
         }
-        return resolutionLimit;
+        return currentResolutionLimit;
     }
 
     /**
-     * The current network is metered (like mobile data)?
+     * Is the current network metered (like mobile data)?
      *
      * @param context App context
      * @return {@code true} if connected to a metered network
@@ -744,7 +773,7 @@ public final class ListHelper {
             final @NonNull Context context) {
         final MediaFormat defaultFormat = getDefaultFormat(context,
                 R.string.default_audio_format_key, R.string.default_audio_format_value);
-        return getAudioFormatComparator(defaultFormat, isLimitingDataUsage(context));
+        return getAudioFormatComparator(defaultFormat, isCurrentlyLimitingDataUsage(context));
     }
 
     /**
@@ -872,8 +901,11 @@ public final class ListHelper {
             @NonNull final Context context) {
         final Locale appLoc = Localization.getAppLocale(context);
 
-        return Comparator.comparing(AudioStream::getAudioLocale, Comparator.nullsLast(
-                        Comparator.comparing(locale -> locale.getDisplayName(appLoc))))
+        return Comparator.comparing(
+                AudioStream::getAudioLocale,
+                Comparator.nullsLast(
+                        Comparator.comparing(locale -> locale.getDisplayName(appLoc))
+                ))
                 .thenComparing(AudioStream::getAudioTrackType);
     }
 }
