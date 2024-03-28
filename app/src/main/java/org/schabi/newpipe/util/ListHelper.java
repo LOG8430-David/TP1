@@ -78,23 +78,11 @@ public final class ListHelper {
      */
     public static int getDefaultResolutionIndex(final Context context,
                                                 final List<VideoStream> videoStreams) {
-        final String defaultResolution = computeDefaultResolution(context,
+        final String defaultResolution = getPreferredResolutionOrCurrentLimit(context,
                 R.string.default_resolution_key, R.string.default_resolution_value);
         return getDefaultResolutionWithDefaultFormat(context, defaultResolution, videoStreams);
     }
 
-    /**
-     * @param context           Android app context
-     * @param videoStreams      list of the video streams to check
-     * @param defaultResolution the default resolution to look for
-     * @return index of the video stream with the default index
-     * @see #getDefaultResolutionIndex(String, String, MediaFormat, List)
-     */
-    public static int getResolutionIndex(final Context context,
-                                         final List<VideoStream> videoStreams,
-                                         final String defaultResolution) {
-        return getDefaultResolutionWithDefaultFormat(context, defaultResolution, videoStreams);
-    }
 
     /**
      * @param context      Android app context
@@ -104,21 +92,8 @@ public final class ListHelper {
      */
     public static int getPopupDefaultResolutionIndex(final Context context,
                                                      final List<VideoStream> videoStreams) {
-        final String defaultResolution = computeDefaultResolution(context,
+        final String defaultResolution = getPreferredResolutionOrCurrentLimit(context,
                 R.string.default_popup_resolution_key, R.string.default_popup_resolution_value);
-        return getDefaultResolutionWithDefaultFormat(context, defaultResolution, videoStreams);
-    }
-
-    /**
-     * @param context           Android app context
-     * @param videoStreams      list of the video streams to check
-     * @param defaultResolution the default resolution to look for
-     * @return index of the video stream with the default index
-     * @see #getDefaultResolutionIndex(String, String, MediaFormat, List)
-     */
-    public static int getPopupResolutionIndex(final Context context,
-                                              final List<VideoStream> videoStreams,
-                                              final String defaultResolution) {
         return getDefaultResolutionWithDefaultFormat(context, defaultResolution, videoStreams);
     }
 
@@ -390,23 +365,42 @@ public final class ListHelper {
                 .collect(Collectors.toList());
     }
 
-    private static String computeDefaultResolution(@NonNull final Context context, final int key,
-                                                   final int value) {
+    /** Lookup the preferred resolution and the current resolution limit.
+     *
+     * @param context App context
+     * @param defaultResolutionKey The defaultResolution preference key
+     * @param defaultResolutionDefaultValue Default resolution if key does not exist
+     * @return The smaller resolution of either the preference or the current limit.
+     */
+    private static String getPreferredResolutionOrCurrentLimit(
+            @NonNull final Context context,
+            final int defaultResolutionKey,
+            final int defaultResolutionDefaultValue
+    ) {
         final SharedPreferences preferences =
                 PreferenceManager.getDefaultSharedPreferences(context);
 
         // Load the preferred resolution otherwise the best available
-        String resolution = preferences != null
-                ? preferences.getString(context.getString(key), context.getString(value))
-                : context.getString(R.string.best_resolution_key);
+        final String preferredResolution = preferences.getString(
+                context.getString(defaultResolutionKey),
+                context.getString(defaultResolutionDefaultValue)
+        );
 
-        final String maxResolution = getResolutionLimit(context);
-        if (maxResolution != null
-                && (resolution.equals(context.getString(R.string.best_resolution_key))
-                || compareVideoStreamResolution(maxResolution, resolution) < 1)) {
-            resolution = maxResolution;
+        // clamp to the currently maximum allowed resolution
+        final String result;
+        final String resolutionLimit = getCurrentResolutionLimit(context);
+        if (resolutionLimit != null
+                && (
+                    // if the preference is best_resolution
+                    preferredResolution.equals(context.getString(R.string.best_resolution_key))
+                    // or the preference is higher than the current max allowed resolution
+                    || compareVideoStreamResolution(resolutionLimit, preferredResolution) < 1
+                )) {
+            result = resolutionLimit;
+        } else {
+            result = preferredResolution;
         }
-        return resolution;
+        return result;
     }
 
     /**
@@ -627,14 +621,14 @@ public final class ListHelper {
 
     /**
      * Fetches the desired resolution or returns the default if it is not found.
-     * The resolution will be reduced if video chocking is active.
+     * The resolution will be reduced if video choking is active.
      *
      * @param context           Android app context
      * @param defaultResolution the default resolution
      * @param videoStreams      the list of video streams to check
      * @return the index of the preferred video stream
      */
-    private static int getDefaultResolutionWithDefaultFormat(@NonNull final Context context,
+    public static int getDefaultResolutionWithDefaultFormat(@NonNull final Context context,
                                                              final String defaultResolution,
                                                              final List<VideoStream> videoStreams) {
         final MediaFormat defaultFormat = getDefaultFormat(context,
@@ -677,6 +671,14 @@ public final class ListHelper {
         return format;
     }
 
+    /** #Comparator for two resolution strings.
+     *
+     * See {@link #sortStreamList} for ordering.
+     *
+     * @param r1 first
+     * @param r2 second
+     * @return comparison int
+     */
     private static int compareVideoStreamResolution(@NonNull final String r1,
                                                     @NonNull final String r2) {
         try {
@@ -693,31 +695,37 @@ public final class ListHelper {
         }
     }
 
-    static boolean isLimitingDataUsage(@NonNull final Context context) {
-        return getResolutionLimit(context) != null;
+    /** Does the application have a maximum resolution set?
+     *
+     * @param context App context
+     * @return whether a max resolution is set
+     */
+    static boolean isCurrentlyLimitingDataUsage(@NonNull final Context context) {
+        return getCurrentResolutionLimit(context) != null;
     }
 
     /**
-     * The maximum resolution allowed.
+     * The maximum current resolution allowed by application settings.
+     * Takes into account whether we are on a metered network.
      *
      * @param context App context
-     * @return maximum resolution allowed or null if there is no maximum
+     * @return current maximum resolution allowed or null if there is no maximum
      */
-    private static String getResolutionLimit(@NonNull final Context context) {
-        String resolutionLimit = null;
+    private static String getCurrentResolutionLimit(@NonNull final Context context) {
+        String currentResolutionLimit = null;
         if (isMeteredNetwork(context)) {
             final SharedPreferences preferences =
                     PreferenceManager.getDefaultSharedPreferences(context);
             final String defValue = context.getString(R.string.limit_data_usage_none_key);
             final String value = preferences.getString(
                     context.getString(R.string.limit_mobile_data_usage_key), defValue);
-            resolutionLimit = defValue.equals(value) ? null : value;
+            currentResolutionLimit = defValue.equals(value) ? null : value;
         }
-        return resolutionLimit;
+        return currentResolutionLimit;
     }
 
     /**
-     * The current network is metered (like mobile data)?
+     * Is the current network metered (like mobile data)?
      *
      * @param context App context
      * @return {@code true} if connected to a metered network
@@ -744,7 +752,7 @@ public final class ListHelper {
             final @NonNull Context context) {
         final MediaFormat defaultFormat = getDefaultFormat(context,
                 R.string.default_audio_format_key, R.string.default_audio_format_value);
-        return getAudioFormatComparator(defaultFormat, isLimitingDataUsage(context));
+        return getAudioFormatComparator(defaultFormat, isCurrentlyLimitingDataUsage(context));
     }
 
     /**
