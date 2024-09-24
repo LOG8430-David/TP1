@@ -32,7 +32,7 @@ import java.io.InterruptedIOException;
 import java.net.SocketException;
 import java.util.List;
 import java.util.Objects;
-
+import dagger.hilt.android.HiltAndroidApp;
 import coil.ImageLoader;
 import coil.ImageLoaderFactory;
 import coil.util.DebugLogger;
@@ -60,7 +60,7 @@ import io.reactivex.rxjava3.plugins.RxJavaPlugins;
  * You should have received a copy of the GNU General Public License
  * along with NewPipe.  If not, see <http://www.gnu.org/licenses/>.
  */
-
+@HiltAndroidApp
 public class App extends Application implements ImageLoaderFactory {
     public static final String PACKAGE_NAME = BuildConfig.APPLICATION_ID;
     private static final String TAG = App.class.toString();
